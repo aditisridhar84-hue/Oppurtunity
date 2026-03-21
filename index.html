@@ -1,0 +1,127 @@
+// controllers/resumeController.js
+const fs = require('fs');
+const path = require('path');
+const pdfParse = require('pdf-parse');
+const User = require('../models/User');
+
+// Common tech skills to look for in resumes
+const SKILL_KEYWORDS = [
+  'python', 'javascript', 'typescript', 'java', 'c++', 'c#', 'ruby', 'go', 'rust', 'kotlin', 'swift',
+  'react', 'angular', 'vue', 'node.js', 'express', 'django', 'flask', 'spring', 'fastapi',
+  'html', 'css', 'sass', 'tailwind',
+  'sql', 'mysql', 'postgresql', 'mongodb', 'redis', 'elasticsearch',
+  'machine learning', 'deep learning', 'tensorflow', 'pytorch', 'scikit-learn', 'keras',
+  'data science', 'data analysis', 'pandas', 'numpy', 'matplotlib',
+  'aws', 'azure', 'gcp', 'docker', 'kubernetes', 'git', 'linux',
+  'rest api', 'graphql', 'microservices', 'devops', 'ci/cd',
+  'nlp', 'computer vision', 'opencv', 'llm', 'langchain',
+  'excel', 'tableau', 'power bi', 'r', 'matlab',
+  'figma', 'ui/ux', 'photoshop',
+  'communication', 'leadership', 'management', 'teamwork'
+];
+
+/**
+ * Basic skill extraction from resume text
+ * Looks for known skill keywords in the text
+ */
+function extractSkillsBasic(text) {
+  const lower = text.toLowerCase();
+  const found = new Set();
+
+  SKILL_KEYWORDS.forEach(skill => {
+    if (lower.includes(skill)) {
+      // Capitalize first letter of each word for display
+      const formatted = skill.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+      found.add(formatted);
+    }
+  });
+
+  return Array.from(found);
+}
+
+/**
+ * Use OpenAI to extract skills (if API key available)
+ */
+async function extractSkillsWithAI(text) {
+  if (!process.env.OPENAI_API_KEY) return null;
+
+  try {
+    // Dynamically require to avoid errors if not installed
+    const { OpenAI } = require('openai');
+    const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-3.5-turbo',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a resume parser. Extract a list of technical and soft skills from the resume text. Return ONLY a JSON array of skill strings, nothing else. Example: ["Python", "React", "Machine Learning"]'
+        },
+        {
+          role: 'user',
+          content: `Extract skills from this resume:\n\n${text.slice(0, 3000)}`
+        }
+      ],
+      temperature: 0.1,
+      max_tokens: 400
+    });
+
+    const content = response.choices[0].message.content.trim();
+    return JSON.parse(content);
+  } catch (err) {
+    console.error('OpenAI extraction failed, falling back to basic:', err.message);
+    return null;
+  }
+}
+
+// @desc    Upload and parse resume PDF
+// @route   POST /api/resume/upload
+// @access  Private
+const uploadResume = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded.' });
+    }
+
+    // Parse PDF
+    const pdfBuffer = fs.readFileSync(req.file.path);
+    const parsed = await pdfParse(pdfBuffer);
+    const text = parsed.text;
+
+    // Try AI extraction first, fallback to basic
+    let skills = await extractSkillsWithAI(text);
+    let method = 'AI-powered';
+
+    if (!skills || skills.length === 0) {
+      skills = extractSkillsBasic(text);
+      method = 'keyword-based';
+    }
+
+    // Remove the uploaded file after parsing
+    fs.unlinkSync(req.file.path);
+
+    // Auto-update user skills
+    if (skills.length > 0) {
+      const existing = req.user.skills || [];
+      const merged = [...new Set([...existing, ...skills])];
+      await User.findByIdAndUpdate(req.user._id, { skills: merged });
+    }
+
+    res.json({
+      success: true,
+      message: `Resume parsed successfully using ${method} extraction.`,
+      skills,
+      textLength: text.length
+    });
+
+  } catch (err) {
+    // Clean up file if it exists
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    console.error('Resume upload error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+module.exports = { uploadResume };
