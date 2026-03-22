@@ -1,41 +1,36 @@
-// middleware/auth.js
-const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
+require('dotenv').config();
 
-// Protect routes - require valid JWT
-const protect = async (req, res, next) => {
-  let token;
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-  // Check Authorization header
-  if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-    token = req.headers.authorization.split(' ')[1];
-  }
+// Routes - files are all in root directory
+app.use('/api/auth',          require('./auth'));
+app.use('/api/opportunities', require('./opportunities'));
+app.use('/api/applications',  require('./applications'));
+app.use('/api/users',         require('./users'));
+app.use('/api/analytics',     require('./analytics'));
 
-  if (!token) {
-    return res.status(401).json({ success: false, message: 'Not authorized. Please log in.' });
-  }
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'OK', time: new Date().toISOString() });
+});
 
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = await User.findById(decoded.id);
+app.get('/', (req, res) => {
+  res.send('OpportunIQ API is running!');
+});
 
-    if (!req.user) {
-      return res.status(401).json({ success: false, message: 'User not found.' });
-    }
+const PORT = process.env.PORT || 5000;
 
-    next();
-  } catch (err) {
-    return res.status(401).json({ success: false, message: 'Token invalid or expired.' });
-  }
-};
-
-// Admin only middleware
-const adminOnly = (req, res, next) => {
-  if (req.user && req.user.role === 'admin') {
-    next();
-  } else {
-    res.status(403).json({ success: false, message: 'Admin access required.' });
-  }
-};
-
-module.exports = { protect, adminOnly };
+mongoose.connect(process.env.MONGO_URI)
+  .then(() => {
+    console.log('MongoDB connected');
+    app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+  })
+  .catch(err => {
+    console.error('MongoDB error:', err.message);
+    process.exit(1);
+  });
